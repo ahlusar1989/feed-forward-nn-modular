@@ -54,6 +54,32 @@ func (network *NeuralNetwork) logging(a ...interface{}) {
 	}
 }
 
+// Predict returns the predicted value of the provided sample
+// Dimensions must match those from provided topology
+// Only use after training the network
+
+func (network *NeuralNetwork) Predict(sample []float64) *mat64.Dense {
+	network.ForwardPass(sample)
+	return network.Activations[network.Layers-1]
+}
+
+// Learn trains the network using the provided dataset
+// Samples must have number of features and labels as specified by topology
+// when constructing the network
+func (network *NeuralNetwork) Learn(dataset [][][]float64) {
+	network.logging("Starting to learn...")
+
+	for i := 0; i < network.Iterations; i++ {
+		network.logging("Iteration ", i+1)
+		network.currentErr = 0
+		for _, sample := range dataset {
+			network.ForwardPass(sample[0])
+			network.BackPropagate(sample[1])
+		}
+		network.logging("Error after %v", network.currentErr/float64(len(dataset)))
+	}
+}
+
 func (network *NeuralNetwork) initializeActivations(topology []int) {
 	for i, nodes := range topology {
 		network.Activations[i] = mat64.NewDense(nodes, 1, nil)
@@ -81,19 +107,62 @@ func (n *NeuralNetwork) initializeActivators(acts []ActivationFunc) {
 	}
 }
 
-func (network *NeuralNetwork) ForwardPass(sample []float64){
+// Forward calculates activations at each layer for given sample
+func (network *NeuralNetwork) ForwardPass(sample []float64) {
 	network.Activations[0].SetCol(0, sample)
 
 	for layer := 0; layer < len(network.Weights); layer++ {
-		network.Activations[layer + 1].Mul(network.Weights[layer], network.Activations[layer])
-		network.Activations[layer + 1].Apply(
+		network.Activations[layer+1].Mul(network.Weights[layer], network.Activations[layer])
+		network.Activations[layer+1].Apply(
 			network.ActivationFunctions[layer+1].Compute,
 			network.Activations[layer+1],
-			)
+		)
 	}
 }
 
+func (network *NeuralNetwork) BackPropagate(label []float64) {
+	network.calculateErrors(label)
+	network.updateWeights()
+}
+
+func (network *NeuralNetwork) calculateErrors(label []float64) {
+	actualValues := mat64.NewDense(len(label), 1, label)
+	network.Errors[network.Layers-1] = network.Loss.Derivative(
+		network.Activations[network.Layers-1], actualValues,
+	)
+	network.currentErr += network.Loss.Compute(network.Activations[network.Layers-1], actualValues)
+	for i := network.Layers - 2; i >= 0; i-- {
+		network.calculateErrorForCurrentLayer(i)
+	}
+}
+
+func (network *NeuralNetwork) updateWeights() {
+	for i := 0; i < network.Layers-1; i++ {
+		mat := &mat64.Dense{}
+		mat.Mul(network.Errors[i+1], network.Activations[i].T())
+		mat.Scale(network.LearningRate, mat)
+		network.Weights[i].Sub(network.Weights[i], mat)
+	}
+}
+
+func (network *NeuralNetwork) calculateErrorForCurrentLayer(currentLayer int) {
+	network.Errors[currentLayer].Mul(network.Weights[currentLayer].T(),
+		network.Errors[currentLayer+1],
+	)
+	network.Errors[currentLayer].MulElem(network.Errors[currentLayer],
+		network.Activations[currentLayer],
+	)
+
+	outputMat := &mat64.Dense{}
+	outputMat.Apply(network.ActivationFunctions[currentLayer].Derivative,
+		network.Activations[currentLayer],
+	)
+
+	network.Errors[currentLayer].MulElem(outputMat, network.Errors[currentLayer])
+}
+
 // Randomly generate weights
+// : TODO move to utils package
 func randomMatrix(rows, columns int) *mat64.Dense {
 	rand.Seed(time.Now().UnixNano())
 	data := make([]float64, rows*columns)
